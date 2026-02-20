@@ -1,0 +1,9 @@
+pyspark
+kafka-python-ng
+streamlit
+pandas
+numpy
+scikit-learn
+faker
+plotly
+watchdog
