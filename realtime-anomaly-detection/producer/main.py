@@ -2,6 +2,7 @@ import time
 import json
 import random
 import logging
+import os
 from datetime import datetime
 from kafka import KafkaProducer
 from faker import Faker
@@ -13,8 +14,8 @@ logger = logging.getLogger(__name__)
 fake = Faker()
 
 # Kafka Configuration
-KAFKA_BROKER = 'localhost:9092'
-TOPIC = 'transactions'
+KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'localhost:9092')
+TOPIC = os.getenv('KAFKA_TOPIC', 'transactions_v2')
 
 def create_producer():
     """Create a Kafka producer with retry logic."""
@@ -38,10 +39,25 @@ def generate_transaction():
     user_id = fake.random_int(min=1, max=1000)
     merchant_id = fake.random_int(min=1, max=500)
     
+    # Velocity Simulation (Simulated as a feature for now)
+    # In a real system, this would be calculated by Spark
+    velocity = random.randint(1, 5)
+
     if is_anomaly:
-        # Anomalous pattern: High amount or unusual location
-        amount = round(random.uniform(5000, 50000), 2)
-        location = fake.country() # Random country (likely different from user's usual)
+        # Anomalous pattern: High amount or unusual location or High Velocity
+        anomaly_type = random.choice(['amount', 'location', 'velocity'])
+        
+        if anomaly_type == 'amount':
+            amount = round(random.uniform(5000, 50000), 2)
+            location = "US"
+        elif anomaly_type == 'location':
+            amount = round(random.uniform(10, 1000), 2)
+            location = fake.country()
+        else: # velocity
+            amount = round(random.uniform(10, 1000), 2)
+            location = "US"
+            velocity = random.randint(10, 50) # High velocity burst
+            
     else:
         # Normal pattern
         amount = round(random.uniform(10, 1000), 2)
@@ -54,6 +70,7 @@ def generate_transaction():
         'amount': amount,
         'timestamp': datetime.utcnow().isoformat(),
         'location': location,
+        'velocity': velocity, # Sending this to help Spark simulation
         'is_anomaly_ground_truth': is_anomaly
     }
 

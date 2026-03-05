@@ -25,7 +25,7 @@ def load_data():
     try:
         if not os.path.exists(DB_PATH):
             return pd.DataFrame(), 0, 0
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=10)
         
         # Get total counts
         cursor = conn.cursor()
@@ -42,6 +42,7 @@ def load_data():
         return df, total_count, total_anomalies_count
     except Exception as e:
         st.error(f"Error loading data: {e}")
+        st.write(f"DEBUG Path: {DB_PATH}")
         return pd.DataFrame(), 0, 0
 
 # Create Tabs
@@ -135,10 +136,15 @@ while True:
         # Current view stats (last 1000)
         view_total = len(df)
         view_anomalies = df[df['prediction'] == 'Anomaly']
-        
+
+        # Ensure 'velocity' column exists in df for visualization
+        if 'velocity' not in df.columns:
+            df['velocity'] = 0 # Default if column missing (e.g. old data)
+            view_anomalies = df[df['prediction'] == 'Anomaly'] # Re-filter to include velocity column
+
         # Ratio based on total history
         ratio = (db_total_anomalies / db_total_count) * 100 if db_total_count > 0 else 0
-        
+
         with metric_total.container():
             st.metric("Total Transactions (All Time)", db_total_count)
             
@@ -150,29 +156,64 @@ while True:
 
         # Visualization
         with chart_placeholder.container():
-            fig = px.scatter(
-                df, 
-                x="timestamp", 
-                y="amount", 
-                color="prediction", 
-                color_discrete_map={"Normal": "blue", "Anomaly": "red"},
-                title="Transaction Amount vs Time (Last 1000)",
-                hover_data=["transaction_id", "location"]
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            col_chart1, col_chart2 = st.columns(2)
+            
+            with col_chart1:
+                fig = px.scatter(
+                    df, 
+                    x="timestamp", 
+                    y="amount", 
+                    color="prediction", 
+                    color_discrete_map={"Normal": "blue", "Anomaly": "red"},
+                    title="Transaction Amount vs Time",
+                    hover_data=["transaction_id", "location", "velocity"]
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                
+            with col_chart2:
+                # Velocity distribution
+                # Ensure velocity is numeric
+                df['velocity'] = pd.to_numeric(df['velocity'], errors='coerce').fillna(0)
+                df['prediction'] = df['prediction'].astype(str).str.strip()
+                
+                # Robust approach: Aggregate manually before plotting
+                # This avoids Plotly histogram binning issues
+                velocity_counts = df.groupby(['velocity', 'prediction']).size().reset_index(name='count')
+                
+                # DEBUG: Show the data being plotted
+                st.write("Debug - Plot Data:", velocity_counts)
+                
+                fig2 = px.bar(
+                    velocity_counts,
+                    x="velocity",
+                    y="count",
+                    # color="prediction", # Temporarily remove color to isolate issue
+                    # color_discrete_map={"Normal": "#1f77b4", "Anomaly": "#ff7f0e"}, 
+                    title="Transaction Velocity Distribution (Simple Bar)",
+                    # log_y=True, # Temporarily remove log_y
+                    opacity=0.8
+                )
+                
+                # Force x-axis to show all integers if range is small, or let it scale
+                # if df['velocity'].max() < 50:
+                #    fig2.update_xaxes(dtick=1)
+                
+                st.plotly_chart(fig2, use_container_width=True, key="velocity_bar")
 
         # Recent Anomalies Table
         with table_placeholder.container():
             st.subheader("Recent Anomalies")
             if not view_anomalies.empty:
-                st.dataframe(view_anomalies[['timestamp', 'amount', 'location', 'transaction_id']].head(10), use_container_width=True)
+                st.dataframe(
+                    view_anomalies[['timestamp', 'amount', 'location', 'velocity', 'transaction_id']].head(10), 
+                    use_container_width=True
+                )
             else:
                 st.info("No anomalies detected in the recent stream.")
                 
         # --- Live Stream Logic ---
         with live_table_placeholder.container():
             # Ensure it acts like a log stream (newest on top)
-            # The query already orders by timestamp DESC, so df.head() gives newest
             
             # Show all transactions, highlighting anomalies
             def highlight_anomaly(row):
@@ -181,7 +222,7 @@ while True:
 
             # Force re-render with a unique key if needed, but dataframe updates should be reactive
             st.dataframe(
-                df[['timestamp', 'amount', 'location', 'prediction', 'transaction_id']].head(50)
+                df[['timestamp', 'amount', 'location', 'velocity', 'prediction', 'transaction_id']].head(50)
                 .style.apply(highlight_anomaly, axis=1),
                 use_container_width=True,
                 height=600  # Make it taller to look like a log feed

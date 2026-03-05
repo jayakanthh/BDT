@@ -2,16 +2,27 @@ import json
 import sqlite3
 import logging
 import time
+from datetime import datetime
 from kafka import KafkaConsumer
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-KAFKA_BROKER = 'localhost:9092'
-TOPIC = 'anomalies'
+# Alert Configuration (Simulated for MVP)
+# In production, this would use AWS SNS, Slack Webhook, or PagerDuty
+def send_alert(transaction):
+    """Send an alert for a high-confidence anomaly."""
+    msg = f"🚨 HIGH SEVERITY ALERT: Anomaly Detected! ID: {transaction['transaction_id']}, Amount: ${transaction['amount']}, Location: {transaction['location']}, Velocity: {transaction.get('velocity', 'N/A')}"
+    logger.warning(msg)
+    # Simulate sending to an external system by appending to a log file
+    with open("alerts.log", "a") as f:
+        f.write(f"{datetime.utcnow().isoformat()} - {msg}\n")
+
 import os
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'anomalies.db')
+KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'localhost:9092')
+TOPIC = os.getenv('KAFKA_TOPIC', 'anomalies_v2')
+DB_PATH = os.getenv('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'anomalies.db'))
 print(f"DB Path: {DB_PATH}")
 
 # Initialize SQLite DB
@@ -24,6 +35,7 @@ def init_db():
                      (transaction_id TEXT PRIMARY KEY, 
                       amount REAL, 
                       location TEXT, 
+                      velocity INTEGER,
                       timestamp TEXT, 
                       is_anomaly_ground_truth BOOLEAN,
                       prediction TEXT)''')
@@ -39,11 +51,12 @@ def save_to_db(transaction):
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('''INSERT OR IGNORE INTO anomalies 
-                     (transaction_id, amount, location, timestamp, is_anomaly_ground_truth, prediction)
-                     VALUES (?, ?, ?, ?, ?, ?)''', 
+                     (transaction_id, amount, location, velocity, timestamp, is_anomaly_ground_truth, prediction)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)''', 
                   (transaction['transaction_id'], 
                    transaction['amount'], 
-                   transaction['location'], 
+                   transaction['location'],
+                   transaction.get('velocity', 0),
                    transaction['timestamp'], 
                    transaction['is_anomaly_ground_truth'], 
                    transaction.get('prediction', 'Unknown')))
@@ -78,6 +91,15 @@ def main():
             transaction = message.value
             logging.info(f"Received: {transaction}")
             save_to_db(transaction)
+            
+            # Check for high-confidence anomalies to alert
+            # Logic: If it's an anomaly AND (Amount > 10000 OR Velocity > 10)
+            if transaction.get('prediction') == 'Anomaly':
+                amount = float(transaction.get('amount', 0))
+                velocity = int(transaction.get('velocity', 0))
+                
+                if amount > 10000 or velocity > 10:
+                    send_alert(transaction)
             
     except KeyboardInterrupt:
         logging.info("Stopping DB Writer...")
