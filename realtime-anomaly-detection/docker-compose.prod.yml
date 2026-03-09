@@ -1,0 +1,61 @@
+version: '3'
+
+services:
+  producer:
+    build: 
+      context: .
+      dockerfile: producer/Dockerfile
+    container_name: producer
+    environment:
+      KAFKA_BROKER: kafka:29092
+      KAFKA_TOPIC: transactions_v2
+    depends_on:
+      - kafka
+
+  processor:
+    build:
+      context: .
+      dockerfile: processor/Dockerfile
+    container_name: processor
+    environment:
+      KAFKA_BROKER: kafka:29092
+      INPUT_TOPIC: transactions_v2
+      OUTPUT_TOPIC: anomalies_v2
+      CHECKPOINT_DIR: /tmp/spark_checkpoint
+    depends_on:
+      - kafka
+    # Ensure Spark can connect to Kafka
+    command: ./run_processor.sh
+
+  db_writer:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: db_writer
+    environment:
+      KAFKA_BROKER: kafka:29092
+      KAFKA_TOPIC: anomalies_v2
+      DB_PATH: /app/data/anomalies.db
+    depends_on:
+      - kafka
+    volumes:
+      - shared_data:/app/data
+    command: python dashboard/db_writer.py
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      DB_PATH: /app/data/anomalies.db
+    depends_on:
+      - db_writer
+    volumes:
+      - shared_data:/app/data
+    command: streamlit run dashboard/app.py
+
+volumes:
+  shared_data:

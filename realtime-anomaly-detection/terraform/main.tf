@@ -2,63 +2,80 @@ provider "aws" {
   region = "us-east-1"
 }
 
-# VPC Configuration
+# --- VPC & Networking ---
 resource "aws_vpc" "main" {
   cidr_block = "10.0.0.0/16"
+  enable_dns_hostnames = true
+  enable_dns_support   = true
   
   tags = {
     Name = "anomaly-detection-vpc"
   }
 }
 
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+}
+
 resource "aws_subnet" "public" {
-  count             = 2
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.${count.index}.0/24"
-  availability_zone = data.aws_availability_zones.available.names[count.index]
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.1.0/24"
+  map_public_ip_on_launch = true
+  availability_zone       = "us-east-1a"
   
   tags = {
-    Name = "anomaly-detection-public-${count.index}"
+    Name = "anomaly-detection-public"
   }
 }
 
-data "aws_availability_zones" "available" {
-  state = "available"
+resource "aws_route_table_association" "public" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
 }
 
-# MSK (Managed Streaming for Kafka) Cluster
-resource "aws_msk_cluster" "kafka" {
-  cluster_name           = "anomaly-detection-kafka"
-  kafka_version          = "2.8.1"
-  number_of_broker_nodes = 2
+# --- Security Group ---
+resource "aws_security_group" "app_sg" {
+  name        = "anomaly-detection-sg"
+  description = "Allow inbound traffic for SSH and dashboard apps"
+  vpc_id      = aws_vpc.main.id
 
-  broker_node_group_info {
-    instance_type   = "kafka.t3.small"
-    client_subnets  = aws_subnet.public[*].id
-    security_groups = [aws_security_group.kafka.id]
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
-  encryption_info {
-    encryption_in_transit {
-      client_broker = "PLAINTEXT"
-    }
+  ingress {
+    from_port   = 8501
+    to_port     = 8501
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # Streamlit
   }
 
-  tags = {
-    Environment = "production"
+  ingress {
+    from_port   = 3000
+    to_port     = 3000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # Grafana
   }
-}
-
-resource "aws_security_group" "kafka" {
-  vpc_id = aws_vpc.main.id
   
   ingress {
-    from_port   = 9092
-    to_port     = 9092
+    from_port   = 8888
+    to_port     = 8888
     protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/16"]
+    cidr_blocks = ["0.0.0.0/0"] # Chronograf
   }
-  
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -67,25 +84,87 @@ resource "aws_security_group" "kafka" {
   }
 }
 
-# ECS Cluster for running containers
-resource "aws_ecs_cluster" "main" {
-  name = "anomaly-detection-cluster"
+# --- EC2 Instance (Free Tier Eligible) ---
+resource "aws_instance" "app_server" {
+  ami           = "ami-0c7217cdde317cfec" # Amazon Linux 2 (us-east-1) - Verify this AMI ID periodically
+  instance_type = "t2.micro"
+  subnet_id     = aws_subnet.public.id
+  vpc_security_group_ids = [aws_security_group.app_sg.id]
+  key_name      = aws_key_pair.deployer.key_name
+
+  user_data = <<-EOF
+              #!/bin/bash
+              # Update system
+              yum update -y
+              
+              # Install Git
+              yum install -y git
+              
+              # Install Docker
+              amazon-linux-extras install docker -y
+              service docker start
+              usermod -a -G docker ec2-user
+              
+              # Install Docker Compose
+              curl -L "https://github.com/docker/compose/releases/download/v2.20.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+              chmod +x /usr/local/bin/docker-compose
+              
+              # Setup Swap (Critical for t2.micro with 1GB RAM)
+              dd if=/dev/zero of=/swapfile bs=1M count=2048
+              chmod 600 /swapfile
+              mkswap /swapfile
+              swapon /swapfile
+              echo "/swapfile swap swap defaults 0 0" >> /etc/fstab
+              
+              # Clone Repository
+              cd /home/ec2-user
+              git clone https://github.com/jayakanthh/BDT.git
+              chown -R ec2-user:ec2-user BDT
+              
+              # Start Application
+              cd BDT/realtime-anomaly-detection
+              # We need to run as ec2-user or ensure docker permissions
+              # Using runuser to run as ec2-user for proper file ownership
+              # Also, ensure we build the images locally since we're not pulling from ECR in this setup
+              /usr/local/bin/docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+              EOF
+
+  tags = {
+    Name = "AnomalyDetection-Server"
+  }
 }
 
-# ECR Repositories
-resource "aws_ecr_repository" "producer" {
-  name = "anomaly-detection/producer"
+# --- Key Pair ---
+# Generates a new key pair. In production, you'd likely import a public key.
+resource "tls_private_key" "pk" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
 }
 
-resource "aws_ecr_repository" "processor" {
-  name = "anomaly-detection/processor"
+resource "aws_key_pair" "deployer" {
+  key_name   = "deployer-key"
+  public_key = tls_private_key.pk.public_key_openssh
 }
 
-resource "aws_ecr_repository" "dashboard" {
-  name = "anomaly-detection/dashboard"
+resource "local_file" "ssh_key" {
+  content  = tls_private_key.pk.private_key_pem
+  filename = "${path.module}/deployer-key.pem"
+  file_permission = "0400"
 }
 
-# Outputs
-output "msk_bootstrap_brokers" {
-  value = aws_msk_cluster.kafka.bootstrap_brokers
+# --- Outputs ---
+output "instance_public_ip" {
+  value = aws_instance.app_server.public_ip
+}
+
+output "ssh_connection_string" {
+  value = "ssh -i deployer-key.pem ec2-user@${aws_instance.app_server.public_ip}"
+}
+
+output "dashboard_url" {
+  value = "http://${aws_instance.app_server.public_ip}:8501"
+}
+
+output "grafana_url" {
+  value = "http://${aws_instance.app_server.public_ip}:3000"
 }

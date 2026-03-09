@@ -24,7 +24,7 @@ The system follows a microservices architecture:
 *   **Chronograf**: The user interface and administrative component of the InfluxData platform
 *   **Python**: Data generation and ML logic
 
-## 🛠 Setup & Running
+## 🛠 Setup & Running (Local)
 
 ### Prerequisites
 *   Docker & Docker Compose
@@ -54,6 +54,41 @@ python3 producer/main.py
 ```bash
 ./run_processor.sh
 ```
+
+## ☁️ AWS Deployment (Free Tier)
+
+This project includes a Terraform configuration to deploy the entire stack on a single **AWS EC2 t2.micro** instance, which is eligible for the AWS Free Tier.
+
+### Prerequisites
+1.  **Terraform**: Install via `brew install terraform` or from [terraform.io](https://www.terraform.io/).
+2.  **AWS CLI**: Configured with your credentials (`aws configure`).
+
+### Deployment Steps
+
+1.  **Run the Deployment Script**:
+    ```bash
+    chmod +x scripts/deploy_ec2.sh
+    ./scripts/deploy_ec2.sh
+    ```
+    This script will:
+    -   Initialize Terraform.
+    -   Provision a `t2.micro` instance in `us-east-1`.
+    -   Configure Security Groups (ports 8501, 3000, 8888).
+    -   Install Docker & Docker Compose on the instance.
+    -   Clone this repository and start the full stack.
+
+2.  **Access the Application**:
+    After the script finishes, it will output the URLs. Wait 5-10 minutes for the instance to initialize.
+    -   **Dashboard**: `http://<EC2_PUBLIC_IP>:8501`
+    -   **Grafana**: `http://<EC2_PUBLIC_IP>:3000`
+    -   **SSH Access**: `ssh -i terraform/deployer-key.pem ec2-user@<EC2_PUBLIC_IP>`
+
+3.  **Teardown**:
+    To avoid costs after you are done:
+    ```bash
+    cd terraform
+    terraform destroy
+    ```
 
 ## 📊 Dashboards
 
