@@ -10,5 +10,12 @@ alerts.log
 .aws/
 .env
 
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/deployer-key.pem
+*.pem
+
 # System
 .DS_Store
