@@ -84,13 +84,29 @@ resource "aws_security_group" "app_sg" {
   }
 }
 
+# --- AMI Data Source ---
+data "aws_ami" "amazon_linux_2" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
+}
+
 # --- EC2 Instance (Free Tier Eligible) ---
 resource "aws_instance" "app_server" {
-  ami           = "ami-0c7217cdde317cfec" # Amazon Linux 2 (us-east-1) - Verify this AMI ID periodically
-  instance_type = "t2.micro"
+  ami           = data.aws_ami.amazon_linux_2.id
+  instance_type = "t3.micro"
   subnet_id     = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.app_sg.id]
   key_name      = aws_key_pair.deployer.key_name
+  
+  root_block_device {
+    volume_size = 20
+    volume_type = "gp3"
+  }
 
   user_data = <<-EOF
               #!/bin/bash
